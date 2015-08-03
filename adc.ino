@@ -1,3 +1,98 @@
+//Reads calibration from eeprom on startup
+//Writes calibration to eeprom if hard coded variables are newer
+//Rewrites all eeprom if resetEEPROM == true
+void initializeCalibration()
+{
+  print("Calibration:");
+  //First int = eeprom version
+  //Secont int = calibration version
+  //Then float calM[6]
+  //then int calB[6]
+  int readPos = 0;
+  int eeV = 0;
+  //EEPROM Version
+  readPos += EEPROM_readAnything(0, eeV);
+  if (resetEEPROM || eeV < eepromVersion)
+  {
+    EEPROM_writeAnything(0, eepromVersion);
+    print(" WE ");
+    print(eepromVersion);
+  }
+  //Calibration Version
+  int eeC = 0;
+  readPos += EEPROM_readAnything(readPos, eeC);
+  if (resetEEPROM || eeV < eepromVersion || eeC < calVersion)
+  {
+    //Write calibration to eeprom
+    int writePos = sizeof(eepromVersion);
+    writePos += EEPROM_writeAnything(writePos, calVersion);
+    writePos += EEPROM_writeAnything(writePos, calM);
+    EEPROM_writeAnything(writePos, calB);
+    print(" WC ");
+    println(calVersion);
+  }
+  else
+  {
+    //Read calibration from eeprom
+    calVersion = eeC;
+    readPos += EEPROM_readAnything(readPos, calM);
+    EEPROM_readAnything(readPos, calB);
+    print(" RC ");
+    println(eeC);
+  }
+}
+
+//Applies calM and calB calibration data for selected channel to get final reading
+float rawConvert(int raw, int channel)
+{
+  return calM[channel] * (raw + calB[channel]);
+}
+
+int simpleSample(int sampleCount, byte chanel)
+{
+    long val = 0;
+    for (int s = 0; s < sampleCount; s++)
+    {
+      val += read_adc(chanel);
+    }
+    val /= sampleCount;
+    return val;
+}
+
+void updateCalM(float goal, byte chanel)
+{
+  //Get current chanel reading, add chanel offset
+  int raw = simpleSample(1024, chanel) + calB[chanel];
+  float m = goal / raw;
+  calM[chanel] = m;
+  
+  updateEEPROM(false);
+}
+
+void updateCalB(int offset, byte chanel)
+{
+  calB[chanel] = offset;
+  
+  updateEEPROM(true);
+}
+
+//Updates the calM or calB in eeprom when it is changed by serial commands
+void updateEEPROM(boolean updateCalB)
+{
+  int pos = sizeof(eepromVersion);
+  //Update & save version
+  calVersion++;
+  pos += EEPROM_writeAnything(pos, calVersion);
+  if (updateCalB)
+  {
+    //calB is after calM so move past it
+    pos += sizeof(calM);
+    EEPROM_writeAnything(pos, calB);
+    return;
+  }
+  EEPROM_writeAnything(pos, calM);
+}
+
 //Delay while constantly checking the analog voltage
 void safeDelay(unsigned long d)
 {

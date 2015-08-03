@@ -6,6 +6,35 @@ void clearBuffer()
   }
 }
 
+boolean readInt(byte &pos, int &result, char errorCode)
+{
+  //Get what channel we will be working with
+  char *end;  
+  result = (int)strtol(&inputBuffer[pos], &end, 10); 
+  if (end == &inputBuffer[pos])
+  {
+    print(F("II"));
+    println(errorCode);
+    return false;
+  }
+  pos = end - inputBuffer; //set position to where strtol() left off
+  return true;
+}
+
+boolean readFloat(byte &pos, float &result, char errorCode)
+{
+  char *end;  
+  result = strtod(&inputBuffer[pos], &end); 
+  if (end == &inputBuffer[pos])
+  {
+    print(F("IF"));
+    println(errorCode);
+    return false;
+  }
+  pos = end - inputBuffer; //set position to where strtol() left off
+  return true;
+}
+
 void readInput()
 {
   //Only process input for 100ms just in case theres too much to do
@@ -71,27 +100,27 @@ void processInput()
     resetAVCheck();
   }
   //Set led pin 13
-  else if (strncmp("l", inputBuffer, 1) == 0)
+  /*else if (strncmp("l", inputBuffer, 1) == 0)
   {
     setLED();
-  }
+  }*/
   //Toggle LCD backlight
-  else if (strncmp("b", inputBuffer, 1) == 0)
+  /*else if (strncmp("b", inputBuffer, 1) == 0)
   {
     setBacklight();
-  }
+  }*/
   //Restart cycle
-  else if (strncmp("r", inputBuffer, 1) == 0)
+  /*else if (strncmp("r", inputBuffer, 1) == 0)
   {
     newCycle();
-  }
+  }*/
   else
   {
     println(F("Unknown Command"));
   }
 }
 
-void setLED()
+/*void setLED()
 {
   if(strcmp("1", &inputBuffer[1]) == 0)
   {
@@ -107,7 +136,7 @@ void setLED()
   {
     println(F("setLED: Invalid value"));
   }
-}
+}*/
 
 void setPower()
 {
@@ -134,9 +163,9 @@ void setPower()
   int power = 0;
   for(byte i = 0; i < totalChanels; i++)
   {
-    if (power + chanel[i] <= value)
+    if (power + chanelPower[i] <= value)
     {
-      power += chanel[i];
+      power += chanelPower[i];
       digitalWrite(chanelPins[i], HIGH);
     }
     else
@@ -168,7 +197,6 @@ void calibration()
   if (strncmp("set", &inputBuffer[pos], 3) == 0)
   {
     pos += 3; //Move past the 'set' in the input buffer
-    removeWhitespace(pos);
     print(F("Set: "));
     set = true;
   }
@@ -179,6 +207,7 @@ void calibration()
     
   //TODO: Possibly just read the character manually?
   //Get mode
+  removeWhitespace(pos);
   if (strncmp("m", &inputBuffer[pos], 1) == 0)
   {
     print(F("M: "));
@@ -198,73 +227,66 @@ void calibration()
   removeWhitespace(pos);
   
   //Get what channel we will be working with
-  char *end;  
-  int channel = (int)strtol(&inputBuffer[pos], &end, 10); 
-  if (end == &inputBuffer[pos])
+  int chanel = 0;
+  if (!readInt(pos, chanel, 'C'))
+  {
+    return;
+  }
+  if (chanel < 0 || chanel >= 6)
   {
     println(F("IC"));
     return;
   }
-  if (channel < 0 || channel >= 6)
-  {
-    println(F("IC"));
-    return;
-  }
-  print(channel);
-  print(F(" :"));
-  pos = end - inputBuffer; //set position to where strtol() left off
-  print(F(" pos:"));
-  print(pos);
-  print(F(" : "));
+  print(chanel);
+  print(F(" = "));
   
   if (set)
   {
+    removeWhitespace(pos);
+    //Look for '=' character
+    if (strncmp("=", &inputBuffer[pos], 1) != 0)
+    {
+      print(F("IF"));
+      return;
+    }
+    pos++;
+    removeWhitespace(pos);
+    
     if (mode == 'm')
     {
       //Set the M to the value necessary to make current reading equal user-entered reading
-      removeWhitespace(pos);
-      //Look for '=' character
-      if (strncmp("=", &inputBuffer[pos], 1) != 0)
+      float calVal = 0;
+      if (!readFloat(pos, calVal, 'M'))
       {
-        print(F("IF"));
         return;
       }
-      pos++;
-      
-      //Read new calibration value as double and set it for selected channel
-      removeWhitespace(pos);
-      char *end;  
-      float calVal = strtod(&inputBuffer[pos], &end); 
-      if (end == &inputBuffer[pos])
-      {
-        println(F("IV1"));
-        return;
-      }
-      if (calVal < 0 || calVal >= 1)
+      if (calVal < 0 || calVal >= 100 || inputBuffer[pos] != '\0')
       {
         println(F("IV2"));
         return;
       }
-      pos = end - inputBuffer; //set position to where strtol() left off
-      print(F(" pos:"));
-      print(pos);
-      print(F(" F: "));
-      println(calVal, 6);
+      print(calVal, 6);
+      updateCalM(calVal, chanel);
+      print(F("Scl: "));
+      println(calM[chanel], 6);
     }
     else
     {
-      //Set the B to offset the current readings
-      int sampleCount = 1024;
-      unsigned long offset = 0;
-      for (int s = 0; s < sampleCount; s++)
+      //Set the B to offset the offset specified
+      //Turn first non-blank character of buffer into int
+      int offset = 0;
+      if (!readInt(pos, offset, 'B'))
       {
-        offset += read_adc(channel);
+        return;
       }
-      print(F(" Offset: "));
+      if (offset < -500 || offset > 500 || inputBuffer[pos] != '\0')
+      {
+        println(F("IO"));
+        return;
+      }
       println(offset);
-      offset /= sampleCount;
-      print(F(" Offset: "));
-      println(offset);
+      updateCalB(offset, chanel);
+      //println();
     }
   }
   else
@@ -272,69 +294,13 @@ void calibration()
     //Reads current calibration values, no modification or EEPROM access
     if (mode == 'm')
     {
-      println(calM[channel], 6);
+      println(calM[chanel], 6);
     }
     else
     {
-      println(calB[channel]);
+      println(calB[chanel]);
     }
   }
-    
-    /*
-  }
-  else
-  {
-    //Read calibration mode
-    print(F("Read: "));
-    boolean valid = false;
-    
-    //TODO: Possibly just read the character manually?
-    if (strncmp("m", &inputBuffer[pos], 1) == 0)
-    {
-      print(F("M: "));
-      valid = true;
-      
-    }
-    else if (strncmp("b", &inputBuffer[pos], 1) == 0)
-    {
-      print(F("B: "));
-      valid = true;
-    }
-    else
-    {
-      println(F("Invalid"));
-    }
-    
-    if (valid)
-    {
-      char mode = inputBuffer[pos];
-      pos++;
-      removeWhitespace(pos);
-      
-      char *end;  
-      int value = (int)strtol(&inputBuffer[pos], &end, 10); 
-      if (end == &inputBuffer[pos] || *end != '\0')
-      {
-        println(F("Invalid value"));
-        return;
-      }
-      if (value < 0 || value >= 6)
-      {
-        println(F("Invalid value"));
-        return;
-      }
-      println(value);
-      
-      if (mode == 'm')
-      {
-        println(calM[value], 6);
-      }
-      else
-      {
-        println(calB[value], 6);
-      }
-    }
-  }*/
 }
 
 void resetAVCheck()
@@ -381,7 +347,7 @@ void resetAVCheck()
   }
 }
 
-void setBacklight()
+/*void setBacklight()
 {
   static boolean backlightOn = true;
   byte pos = 1;
@@ -418,9 +384,9 @@ void setBacklight()
   {
     println(F("setBacklight: Invalid value"));
   }
-}
+}*/
 
-void newCycle()
+/*void newCycle()
 {
   byte pos = 1;
   removeWhitespace(pos);
@@ -435,7 +401,7 @@ void newCycle()
   {
     println(F("newCycle: Invalid value"));
   }
-}
+}*/
 
 //moves to next non-whitespace character in input buffer
 void removeWhitespace(byte &pos)

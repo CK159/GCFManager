@@ -10,12 +10,12 @@ const int enterPin = A5;
 const int stopPin = A4;
 const int beepPin = 7;
 const byte chanelPins[3] = {11, 10, 9}; //Pins of each chanel. Must match up with chanel array above
-const byte chanel[3] = {2, 2, 1}; //Relative power of each chanel. MUST BE IN DESCENDING ORDER
+const byte chanelPower[3] = {2, 2, 1}; //Relative power of each chanel. MUST BE IN DESCENDING ORDER
 const byte totalChanels = 3; //Number of power chanels for discharging
 const byte maxTemp = 4; //Maximum number of DS18B20 temp sensors that will be detected
 const unsigned long loopDelay = 1000; //ms between log intervals. Default 1000 (1 samples/s)
 const unsigned long fastLCDDelay = 250; //approx ms between partial LCD screen updates (V, A, cell V only)
-const byte bufferSize = 16; //maximum length a valid serial comand can be
+const byte bufferSize = 20; //maximum length a valid serial comand can be
 const int avCutoff = 920; //Cutoff of avPin ADC reading. Below this will be considered analog board voltage error
 const int sampleSize = 32; //Number of samples per chanel to read each time the readADC() function is called
 
@@ -35,23 +35,25 @@ const byte sensorMap[] = {AMBIENT, BATT1, BATT2, AUX}; //Should have number of e
 #define C3 4
 #define TOT 5
 
+//EEPROM variables
+//Format eepromVersion, calVersion, calM[6], calB[6]
+const boolean resetEEPROM = false; // Will rewrite the EEPROM on startup with values below (useful if EEPROM is not in known state)
+const int eepromVersion = 1; //Rewrites EEPROM content if eeprom version < this
+int calVersion = 0; // Loads calibration from eeprom if this < eeprom calVersion, otherwise write calibration to eeprom on startup
+
 //CALIBRATION
-const int calVersion = 0; //The default calibration specified here will be used if this number is larger than the EEPROM cal version
 //These are default calibration values. EEPROM stores current calibration and it can be adjusted through serial commands 
-//y = Mx + B (M = multiplication factor, B = offset voltage correction, x = raw ADC value)
-/*const float voltM = .0033f;
-const float voltB = 0f;
-const float ampM = .0050f;
-const float ampB = 0f;*/
-const float calM[6] = {0.0050f, 0.0050f, 0.0012207f, 0.0012207f, 0.0012207f, 0.0033f};
-const int   calB[6] = {0, 1, 2, 3, 4, 5};
+//y = M(x + B) (M = multiplication factor, B = offset voltage correction, x = raw ADC integer value)
+float calM[6] = {0.0050f, 0.0050f, 0.0012207f, 0.0012207f, 0.0012207f, 0.0033f};
+int   calB[6] = {0, 1, 2, 3, 4, 5};
 
 //LCD bar graph scaling
-const float voltStart = 9.6f; //9.6-12.6 voltage range
-const float voltScale = 13.66f;
-const float chargeScale = 0.01025f; //0-21 amps
-const float dischargeScale = 0.006098f; //0-25 amps
-const float tempScale = 1.1714f; //0-35 degree above ambient
+const int lcdSteps = 41;
+const float voltStart = 9.6f; //9.6-13 voltage range
+const float voltEnd = 13.0f;
+const float chargeMax = 21.0f; //0-21 amps
+const float dischargeMax = 25.0f; //0-25 amps
+const float tempScale = 35.0f; //0-35 degree above ambient
 
 byte totalTemp = 0; //Total # of temp sensors detected, will not excede maxTemp. Excess sensors will be ignored
 float fahrenheit[maxTemp]; //Most recent temperature for each sensor
@@ -72,6 +74,27 @@ unsigned long sample[6]; //Holds one whole cycle worth of data
 unsigned int fastCount = 0;
 unsigned int sampleCount = 0;
 
+//Charger commands and beep detection parameters
+const unsigned long beepMin = 100; //Minimum length of a valid charger beep
+const unsigned long beepMax = 500; //Maximum length of a valid beep
+const unsigned long pressTime = 300; //Time spent triggering a button on the charger
+volatile byte pendingBeep = 0;
+volatile unsigned long beepStart = 0; //When a beep starts. Used to calculate beep length
+boolean beepError = false; //TODO: Find good defined use
+
+//Charger modes
+const char modes[7][5] = {"WAIT", "CHG+", "CHGW", "DSC-", "DSCW", "DONE", "EROR"};
+byte mode = 0 //Current charger mode
+//'Convenient' constants for all the modes
+#define M_WAIT 0
+#define M_CHG 1
+#define M_CHGW 2
+#define M_DSC 3
+#define M_DSCW 4
+#define M_DONE 5
+#define M_ERROR 6
+
+//Communication mode
 #define UNSET 0
 #define USB 1
 #define BLUETOOTH 2
@@ -129,15 +152,18 @@ void setup()
   establishContact();
   
   //barTest();
+  attachInterrupt(4, interruptTest, CHANGE);
   
   lcd.clear();
   initTemp();
+  initializeCalibration();
   
+  //while(true){delay(10);}
   //This number is incremented any time the calibration values are changed
-  print(F("Calibration: "));
-  int calNum = -1;
-  EEPROM_readAnything(0, calNum);
-  println(calNum);
+  //print(F("Calibration: "));
+  //int calNum = -1;
+  //EEPROM_readAnything(0, calNum);
+  //println(calNum);
   
   nextLoop = millis(); //Start counting loops from now
   
@@ -151,19 +177,21 @@ void loop()
 {
   digitalWrite(ledpin, HIGH);
   
+  if (pendingBeep)
+  {
+    print("BEEP:");
+    println(pendingBeep);
+    digitalWrite(enterPin, HIGH);
+    delay(pressTime);
+    digitalWrite(enterPin, LOW);
+    pendingBeep--;
+  }
+  
   readTemp();
   intervalCount++;
   
   print(F("BT Status: "));
   println(digitalRead(btState));
-  
-  //Use 'a' command for this info
-  /*digitalWrite(avLED, HIGH);
-  print(F("AV: "));
-  println(analogRead(avPin));
-  digitalWrite(avLED, LOW);
-  print(F("AVC: "));
-  println(avCheck());*/
   
   print(F("Interval: "));
   println(intervalCount);
@@ -174,10 +202,10 @@ void loop()
   
   //Value processing
   printTemps();
-  println(F("Vals: "));
-  print(F("S"));
-  println(sampleCount);
-  print(F("F"));
+  print(F("Vals: "));
+  print(F("S: "));
+  print(sampleCount);
+  print(F(" F:"));
   println(fsTemp);
   
   //Reset averages
@@ -188,7 +216,24 @@ void loop()
   delayUntil();
 }
 
-
+void interruptTest()
+{
+  boolean state = digitalRead(beepPin);
+  if (state)
+  {
+    beepStart = millis();
+  }
+  else
+  {
+    unsigned long len = millis() - beepStart;
+    
+    if (len > beepMin && len < beepMax)
+    {
+      pendingBeep++;
+      beepStart = 0;
+    }
+  }
+}
 
 void LCDUpdate()
 {
@@ -212,7 +257,7 @@ void LCDUpdate()
   //Temps + Temp bar graph
   float maxBatt = max(fahrenheit[BATT1], fahrenheit[BATT2]);
   float delta = maxBatt - fahrenheit[AMBIENT];
-  float scaledTemp = max(delta * tempScale, 0);
+  float scaledTemp = max(delta * (lcdSteps / tempScale), 0);
   
   drawBar((byte)scaledTemp, 3, 'T');
   clearPrint(maxBatt, 3, 1, 0, 3);
@@ -229,38 +274,38 @@ void LCDUpdate()
 //Updates just the more frequently changing information (voltages,currents, etc)
 void LCDPartialUpdate()
 {
-  unsigned long avg[6];
+  int avg[6];
   averages(avg, fastSample, fastCount);
   
-  lcd.setCursor(0, 2);
+  /*lcd.setCursor(0, 2);
   lcd.print('A');
-  clearPrint(avg[0], 7, 1, 2, '0');
+  clearPrint((long)avg[0], 7, 1, 2, '0');
   lcd.setCursor(8, 2);
   lcd.print('B');
-  clearPrint(avg[1], 7, 9, 2, '0');
+  clearPrint((long)avg[1], 7, 9, 2, '0');*/
+
+  float voltage = rawConvert(avg[TOT], TOT);
+  float amperage = rawConvert(avg[CHG], CHG);
   
-  //float amperage = ampM * (float)avg[1] + ampB;
-  float amperage = calM[CHG] * (float)avg[CHG] + calB[CHG];
-  
-  clearPrint(amperage, 2, 1, 6, 0);
+  clearPrint(amperage, 2, 2, 5, 0);
   lcd.print('A');
-  
-  //float voltage = voltM * (float)avg[0] + voltB;
-  float voltage = calM[TOT] * (float)avg[TOT] + calB[TOT];
   
   clearPrint(voltage, 2, 2, 11, 0);
   lcd.print('V');
   
+  //Cell Voltages: Cell 1
+  clearPrint(max(rawConvert(avg[C1], C1), 0), 1, 3, 0, 2);  //Cell 1
+  clearPrint(max(rawConvert(avg[C2], C2), 0), 1, 3, 6, 2);  //Cell 2
+  clearPrint(max(rawConvert(avg[C3], C3), 0), 1, 3, 12, 2); //Cell 3
+  //NOTE: Temporary negative values on startup can cause the cell lines to print funny due to negative sign.
+  //Either clamp value to minimum 0 OR always blank the empty space cahracter after each cell reading
+  
   //lcd.setCursor(0, 2);
   //lcd.print("4.00  4.00  4.00");
   
-  
   //TODO: Make this based off of the voltage and amperage floats which have the calibration values applied to them
-  float aBar = max(avg[1] * chargeScale , 0);
-  float vBar = max((voltage - voltStart) * voltScale , 0);
-  
-  unsigned long a1 = (millis() - cycleStart) % 45;
-  unsigned long b1 = millis() % 45;
+  float aBar = max(amperage / chargeMax * lcdSteps, 0);
+  float vBar = max((voltage - voltStart) / (voltEnd - voltStart) * lcdSteps , 0);
   
   drawBar((byte)vBar, 1, 'V');
   drawBar((byte)aBar, 2, 'A');
@@ -268,13 +313,14 @@ void LCDPartialUpdate()
   transferFastSample();
 }
 
-void averages(unsigned long *buf, unsigned long *input, int count)
+void averages(int *buf, unsigned long *input, int count)
 {
   if (count != 0)
   {
     for (byte i = 0; i < 6; i++)
     {
-      buf[i] = input[i] / count;
+      unsigned long temp = input[i] / count;
+      buf[i] = (int)temp;
     }
   }
   else

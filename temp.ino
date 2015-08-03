@@ -18,7 +18,7 @@ boolean readTemp()
 {
   //Check if any sensor is still processing
   //THIS DOESNT WORK QUITE RIGHT
-  for (byte i = 0; i < totalTemp; i++)
+  /*for (byte i = 0; i < totalTemp; i++)
   {
     ds.reset();
     ds.select(&addr[i*8]);
@@ -33,7 +33,7 @@ boolean readTemp()
       println(F("Duplicate temps"));
       return false;
     }
-  }
+  }*/
   
   //Sensor not processing. Get the new value and restart
   //println(F("New Temps"));
@@ -74,7 +74,7 @@ void startNewConversion()
 
 void initTemp()
 {
-  println(F("Initializing Temp Sensors..."));
+  println(F("ITS"));
   
   byte currentSensor = 0;
   byte newAddr[8];
@@ -84,13 +84,14 @@ void initTemp()
     //Make sure maxTemp is not exceded
     if (totalTemp + 1 > maxTemp)
     {
-      println(F("Maximum sensor count exceded. Ignoring all remaining devices"));
+      //Maximum sensor count exceded. Ignoring all remaining devices
+      println(F("MTS"));
       continue;
     }
     //Print unique number for temp sensor
-    print(F("Sensor "));
+    print(F("S "));
     print(currentSensor);
-    print(F(": ROM ="));
+    print(F(":R="));
     for(byte i = 0; i < 8; i++)
     {
       print(' ');
@@ -98,7 +99,7 @@ void initTemp()
     }
     //Verify crc for temp sensor
     if (OneWire::crc8(newAddr, 7) != newAddr[7]) {
-      println(F("CRC is not valid!"));
+      println(F("CRC"));
       delay(2000);
       continue;
     }
@@ -106,18 +107,21 @@ void initTemp()
     boolean valid = false;
     switch (newAddr[0])
     {
-      case 0x10:
+      /*case 0x10:
+        //Unsupported Chip=DS18S20
         println(F(" Unsupported Chip=DS18S20"));  // or old DS1820
-        break;
+        break;*/
       case 0x28:
-        println(F(" Chip = DS18B20"));
+        println(F(" DS18B20"));
         valid = true;
         break;
-      case 0x22:
+      /*case 0x22:
+        //Unsupported Chip=DS1822
         println(F(" Unsupported Chip=DS1822"));
-        break;
+        break;*/
       default:
-        println(F("Device is not a DS18x20 family device."));
+        //Device is not a DS18x20 family device.
+        println(F(" USC"));
         break;
     }
     //Valid device found, save address
@@ -132,9 +136,8 @@ void initTemp()
     currentSensor++;
   }
   
-  print(F("Found "));
-  print(totalTemp);
-  println(F(" temp sensors."));
+  print(F("TMP:"));
+  println(totalTemp);
   
   for(byte i = 0; i < 8*maxTemp; i++)
   {
@@ -154,8 +157,7 @@ void initTemp()
   delay(750);
   readTemp();
   
-  print(F("Initial "));
+  println(F("INT:"));
   printTemps();
-  println();
   return;
 }
