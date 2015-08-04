@@ -1,6 +1,6 @@
 void printTemps()
 {
-  print(F("t:"));
+  print(F(":F "));
   for (byte i = 0; i < totalTemp; i++)
   {
     print(sensorMap[i]);

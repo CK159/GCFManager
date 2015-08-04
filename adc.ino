@@ -157,6 +157,34 @@ boolean avCheck()
   return true;
 }
 
+void averages(int *buf, unsigned long *input, int count)
+{
+  if (count != 0)
+  {
+    for (byte i = 0; i < 6; i++)
+    {
+      unsigned long temp = input[i] / count;
+      buf[i] = (int)temp;
+    }
+  }
+  else
+  {
+    memset(buf, 0, sizeof(int)*6);
+  }
+}
+
+//Takes any samples in the fastSample and puts them into the main sample variables
+void transferFastSample()
+{
+  for (byte i = 0; i < 6; i++)
+  {
+    sample[i] += fastSample[i];
+    fastSample[i] = 0;
+  }
+  sampleCount += fastCount;
+  fastCount = 0;
+}
+
 void adcSample()
 {
   //ensure analog board has power before trying to do anything

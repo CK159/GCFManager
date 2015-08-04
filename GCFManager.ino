@@ -34,6 +34,7 @@ const byte sensorMap[] = {AMBIENT, BATT1, BATT2, AUX}; //Should have number of e
 #define C2 3
 #define C3 4
 #define TOT 5
+char channelCodes[6] = {'d', 'c', 'x', 'y', 'z', 't'}; //How do I make a non-null terminated string?
 
 //EEPROM variables
 //Format eepromVersion, calVersion, calM[6], calB[6]
@@ -77,14 +78,15 @@ unsigned int sampleCount = 0;
 //Charger commands and beep detection parameters
 const unsigned long beepMin = 100; //Minimum length of a valid charger beep
 const unsigned long beepMax = 500; //Maximum length of a valid beep
-const unsigned long pressTime = 300; //Time spent triggering a button on the charger
+const int pressTime = 300; //Time spent triggering a button on the charger
+const int longPressTime = 1200; //Time spent triggering a button on the charger
 volatile byte pendingBeep = 0;
 volatile unsigned long beepStart = 0; //When a beep starts. Used to calculate beep length
 boolean beepError = false; //TODO: Find good defined use
 
 //Charger modes
 const char modes[7][5] = {"WAIT", "CHG+", "CHGW", "DSC-", "DSCW", "DONE", "EROR"};
-byte mode = 0 //Current charger mode
+byte mode = 0; //Current charger mode
 //'Convenient' constants for all the modes
 #define M_WAIT 0
 #define M_CHG 1
@@ -189,24 +191,51 @@ void loop()
   
   readTemp();
   intervalCount++;
+  unsigned long seconds = (millis() - cycleStart) / 1000;
   
-  print(F("BT Status: "));
-  println(digitalRead(btState));
-  
-  print(F("Interval: "));
-  println(intervalCount);
-
-  unsigned int fsTemp = fastCount;
-  LCDUpdate();
-  transferFastSample(); //Redundant but for safety
-  
-  //Value processing
-  printTemps();
-  print(F("Vals: "));
+  //unsigned int fsTemp = fastCount;
+  /*print(F("Vals: "));
   print(F("S: "));
   print(sampleCount);
   print(F(" F:"));
-  println(fsTemp);
+  println(fsTemp);*/
+  
+  print('@');
+  print(intervalCount);
+  print(F(" M:"));
+  print(modes[mode]);
+  print(F(" C:"));
+  println(cycle);
+  
+  LCDUpdate(seconds);
+  transferFastSample(); //Redundant but for safety
+  
+  //Temperature
+  printTemps();
+  
+  //ADC Readings
+  int avg[6];
+  averages(avg, sample, sampleCount);
+  
+  print(F(":V"));
+  
+  for (byte i = 0; i < 6; i++)
+  {
+    print(' ');
+    print(channelCodes[i]);
+    print(':');
+    print(rawConvert(avg[i], i), 3);
+  }
+  println();
+  
+  //Elapsed time this cycle
+  print(F(":T "));
+  println(seconds);
+  
+  //Closing entry for this update
+  print('$');
+  println(intervalCount);
+  println();
   
   //Reset averages
   memset(sample, 0, sizeof(sample));
@@ -235,7 +264,7 @@ void interruptTest()
   }
 }
 
-void LCDUpdate()
+void LCDUpdate(unsigned long seconds)
 {
   //Status
   lcd.setCursor(0, 0);
@@ -246,7 +275,7 @@ void LCDUpdate()
   lcd.print("1234");
   
   //Time
-  unsigned long seconds = (millis() - cycleStart) / 1000;
+  //unsigned long seconds = (millis() - cycleStart) / 1000;
   printTime(seconds, 9, 1);
   
   //Cycle count
@@ -276,13 +305,6 @@ void LCDPartialUpdate()
 {
   int avg[6];
   averages(avg, fastSample, fastCount);
-  
-  /*lcd.setCursor(0, 2);
-  lcd.print('A');
-  clearPrint((long)avg[0], 7, 1, 2, '0');
-  lcd.setCursor(8, 2);
-  lcd.print('B');
-  clearPrint((long)avg[1], 7, 9, 2, '0');*/
 
   float voltage = rawConvert(avg[TOT], TOT);
   float amperage = rawConvert(avg[CHG], CHG);
@@ -300,9 +322,6 @@ void LCDPartialUpdate()
   //NOTE: Temporary negative values on startup can cause the cell lines to print funny due to negative sign.
   //Either clamp value to minimum 0 OR always blank the empty space cahracter after each cell reading
   
-  //lcd.setCursor(0, 2);
-  //lcd.print("4.00  4.00  4.00");
-  
   //TODO: Make this based off of the voltage and amperage floats which have the calibration values applied to them
   float aBar = max(amperage / chargeMax * lcdSteps, 0);
   float vBar = max((voltage - voltStart) / (voltEnd - voltStart) * lcdSteps , 0);
@@ -313,48 +332,20 @@ void LCDPartialUpdate()
   transferFastSample();
 }
 
-void averages(int *buf, unsigned long *input, int count)
-{
-  if (count != 0)
-  {
-    for (byte i = 0; i < 6; i++)
-    {
-      unsigned long temp = input[i] / count;
-      buf[i] = (int)temp;
-    }
-  }
-  else
-  {
-    memset(buf, 0, sizeof(unsigned long)*6);
-  }
-}
-
-//Takes any samples in the fastSample and puts them into the main sample variables
-void transferFastSample()
-{
-  for (byte i = 0; i < 6; i++)
-  {
-    sample[i] += fastSample[i];
-    fastSample[i] = 0;
-  }
-  sampleCount += fastCount;
-  fastCount = 0;
-}
-
 void delayUntil()
 {
   unsigned long cTime = millis();
   unsigned long nextLCD = cTime + fastLCDDelay;
   nextLoop += loopDelay;
   
-  print(F("Sleeping for "));
+  //print(F("Sleeping for "));
   if (nextLoop > cTime)
   {
-    println(nextLoop - cTime);
+    //println(nextLoop - cTime);
   }
   else
   {
-    print(F("0ms! "));
+    print('!');
     print(cTime - nextLoop);
     println(F("ms lost!"));
     //Prevent falling behind and building up a bunch of queued loops
