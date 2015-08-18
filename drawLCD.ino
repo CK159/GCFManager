@@ -48,6 +48,74 @@ byte bChar[8] = {
   B00000, 
   B00000 };
 
+void LCDUpdate(unsigned long seconds)
+{
+  //Status
+  lcd.setCursor(0, 0);
+  lcd.print(stateText[state]);
+  
+  //MAH
+  lcd.setCursor(5, 1);
+  lcd.print("1234");
+  
+  //Time
+  //unsigned long seconds = (millis() - cycleStart) / 1000;
+  printTime(seconds, 9, 1);
+  
+  //Cycle count
+  lcd.setCursor(0, 1);
+  clearPrint((long)cycle, 3, 0, 1, '0');
+  lcd.print('C');
+  
+  //Temps + Temp bar graph
+  float maxBatt = max(fahrenheit[BATT1], fahrenheit[BATT2]);
+  float delta = maxBatt - fahrenheit[AMBIENT];
+  float scaledTemp = max(delta * (lcdSteps / tempScale), 0);
+  
+  drawBar((byte)scaledTemp, 3, 'T');
+  clearPrint(maxBatt, 3, 1, 0, 3);
+  lcd.setCursor(6, 3);
+  lcd.print('(');
+  clearPrint(delta, 2, 1, 7, 3);
+  lcd.print(')');
+  clearPrint(fahrenheit[AUX], 3, 1, 12, 3);
+  
+  //Everything else (now handled in the main loop for some fast-sample related timing benefits)
+  //LCDPartialUpdate();
+}
+
+//Updates just the more frequently changing information (voltages,currents, etc)
+void LCDPartialUpdate()
+{
+  int avg[6];
+  averages(avg, fastSample, fastCount);
+
+  float voltage = rawConvert(avg[TOT], TOT);
+  float amperage = rawConvert(avg[CHG], CHG);
+  
+  clearPrint(amperage, 2, 2, 5, 0);
+  lcd.print('A');
+  
+  clearPrint(voltage, 2, 2, 11, 0);
+  lcd.print('V');
+  
+  //Cell Voltages: Cell 1
+  clearPrint(max(rawConvert(avg[C1], C1), 0), 1, 3, 0, 2);  //Cell 1
+  clearPrint(max(rawConvert(avg[C2], C2), 0), 1, 3, 6, 2);  //Cell 2
+  clearPrint(max(rawConvert(avg[C3], C3), 0), 1, 3, 12, 2); //Cell 3
+  //NOTE: Temporary negative values on startup can cause the cell lines to print funny due to negative sign.
+  //Either clamp value to minimum 0 OR always blank the empty space character after each cell reading
+  
+  //Done - TODO: Make this based off of the voltage and amperage floats which have the calibration values applied to them
+  float aBar = max(amperage / chargeMax * lcdSteps, 0);
+  float vBar = max((voltage - voltStart) / (voltEnd - voltStart) * lcdSteps , 0);
+  
+  drawBar((byte)vBar, 1, 'V');
+  drawBar((byte)aBar, 2, 'A');
+  
+  transferFastSample();
+}
+
 //Put a floating point number onto LCD in specified location with specified # decimal and whole digits
 void clearPrint(float num, byte whole, byte decimal, byte col, byte line)
 {

@@ -88,7 +88,7 @@ void processInput()
   //Set power - 0 to 5 leds
   if (strncmp("p", inputBuffer, 1) == 0)
   {
-    setPower();
+    setPowerInput();
   }
   //Calibration
   else if (strncmp("c", inputBuffer, 1) == 0)
@@ -138,7 +138,7 @@ void processInput()
   }
 }*/
 
-void setPower()
+void setPowerInput()
 {
   byte pos = 1;
   removeWhitespace(pos);
@@ -156,8 +156,9 @@ void setPower()
     println(F("setPower: Negative value is invalid"));
     return;
   }
-  
-  print(F("Power goal: "));
+
+  setPower(value);
+  /*print(F("Power goal: "));
   println(value);
   
   int power = 0;
@@ -175,7 +176,7 @@ void setPower()
   }
   
   print(F("Power Achieved: "));
-  println(power);
+  println(power);*/
 }
 
 //READ CALIBRATION

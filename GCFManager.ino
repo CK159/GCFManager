@@ -9,10 +9,10 @@ const int ledpin = 13; //Lights up when processing in main loop
 const int enterPin = A5;
 const int stopPin = A4;
 const int beepPin = 7;
-const byte chanelPins[3] = {11, 10, 9}; //Pins of each chanel. Must match up with chanel array above
-const byte chanelPower[3] = {2, 2, 1}; //Relative power of each chanel. MUST BE IN DESCENDING ORDER
 const byte totalChanels = 3; //Number of power chanels for discharging
-const byte maxTemp = 4; //Maximum number of DS18B20 temp sensors that will be detected
+const byte chanelPins[totalChanels] = {11, 10, 9}; //Pins of each chanel. Must match up with chanel array above
+const byte chanelPower[totalChanels] = {2, 2, 1}; //Relative power of each chanel. MUST BE IN DESCENDING ORDER
+const byte maxTempSensors = 4; //Maximum number of DS18B20 temp sensors that will be detected
 const unsigned long loopDelay = 1000; //ms between log intervals. Default 1000 (1 samples/s)
 const unsigned long fastLCDDelay = 250; //approx ms between partial LCD screen updates (V, A, cell V only)
 const byte bufferSize = 20; //maximum length a valid serial comand can be
@@ -37,14 +37,14 @@ const byte sensorMap[] = {AMBIENT, BATT1, BATT2, AUX}; //Should have number of e
 char channelCodes[6] = {'d', 'c', 'x', 'y', 'z', 't'}; //How do I make a non-null terminated string?
 
 //EEPROM variables
-//Format eepromVersion, calVersion, calM[6], calB[6]
+//Format: eepromVersion, calVersion, calM[6], calB[6]
 const boolean resetEEPROM = false; // Will rewrite the EEPROM on startup with values below (useful if EEPROM is not in known state)
 const int eepromVersion = 1; //Rewrites EEPROM content if eeprom version < this
 int calVersion = 0; // Loads calibration from eeprom if this < eeprom calVersion, otherwise write calibration to eeprom on startup
 
 //CALIBRATION
 //These are default calibration values. EEPROM stores current calibration and it can be adjusted through serial commands 
-//y = M(x + B) (M = multiplication factor, B = offset voltage correction, x = raw ADC integer value)
+//y = M(x + B) (M = multiplication factor, B = offset voltage correction, x = raw (or averaged) ADC integer value)
 float calM[6] = {0.0050f, 0.0050f, 0.0012207f, 0.0012207f, 0.0012207f, 0.0033f};
 int   calB[6] = {0, 1, 2, 3, 4, 5};
 
@@ -57,12 +57,12 @@ const float dischargeMax = 25.0f; //0-25 amps
 const float tempScale = 35.0f; //0-35 degree above ambient
 
 byte totalTemp = 0; //Total # of temp sensors detected, will not excede maxTemp. Excess sensors will be ignored
-float fahrenheit[maxTemp]; //Most recent temperature for each sensor
-byte addr[8*maxTemp]; //8 byte address for each detedted temp sensor
+float fahrenheit[maxTempSensors]; //Most recent temperature for each sensor
+byte addr[8*maxTempSensors]; //8 byte address for each detedted temp sensor
 unsigned long nextLoop = 0;
 unsigned long intervalCount = 0;
-unsigned long cycleStart = 0;
-unsigned int cycle = 0;
+unsigned long timerStart = 0;
+int cycle = 0;
 char inputBuffer[bufferSize];
 byte buffIndex = 0;
 boolean waitForNewline = false;
@@ -78,23 +78,50 @@ unsigned int sampleCount = 0;
 //Charger commands and beep detection parameters
 const unsigned long beepMin = 100; //Minimum length of a valid charger beep
 const unsigned long beepMax = 500; //Maximum length of a valid beep
-const int pressTime = 300; //Time spent triggering a button on the charger
-const int longPressTime = 1200; //Time spent triggering a button on the charger
-volatile byte pendingBeep = 0;
+const unsigned long beepWindow = 3000; //Time window for beeps to be grouped together to detect end of charge
+const byte beepCount = 4; //Number of beeps in the beepWindow to detect end of charge
+const int pressTime = 200; //Time spent triggering a button on the charger
+const byte longPressCount = 2; //full cycles spent triggering a long button press on the charger
+byte longPress = 0; //full cycles spent triggering a long button press on the charger
+volatile byte pendingBeep = 0; //Number of beeps detected in this beep sequence
 volatile unsigned long beepStart = 0; //When a beep starts. Used to calculate beep length
-boolean beepError = false; //TODO: Find good defined use
+volatile unsigned long beepWindowStart = 0; //When a beep sequence starts.
+volatile boolean ignoreBeeps = false; //Used to not listen to the beeps that occur when triggering start and stop buttons
+
+//Charger state variables. This controls when the charger will switch modes
+int cycleLimit = 0; //Number of cycles to perform - must be set at startup
+int dischargePower = 5; //Power used for discharging. TODO: Make roughly equivalent to watts and make it auto adjust
+const unsigned long waitTime = 30000; //Milliseconds to spend in M_CHGW and M_DSCW
+unsigned long waitStart = 0; //millis() of when M_CHGW or M_DSCW begin
+const float targetCell = 3.7f; //Target resting voltage of lowest cell after M_DSCW
+float cutoffCell = 3.4f; //Calculated loaded cell voltage used to cut off M_DSC. Recalculated after M_DSCW based on actual cell and targetCell
+
+//Safety Constants + error detection for abnormal conditions, exceeded limits, etc.
+const float maxTemp = 135.0f; //The f is for Fahrenheit - max absolute battery temp
+const float maxDeltaTemp = 35.0f; //Effectively puts max ambient temp around 100f
+const float maxImbalance = 0.25f; //Maximum voltage difference allowed between any cells
+const float minCell = 3.1f; //Error triggered if any cell falls below this
+const float maxCell = 4.25f; //Error triggered if triggered if any cell exceeds this
+const unsigned long minChg = 420000; //7 minutes (7*60*1000) - error if charging time is less than this (except initial charge)
+const unsigned long minDsc = 240000; //4 minutes - error if discharging time is less than this
+const unsigned long maxChg = 1800000; //30 minutes  - error if charging time is more than this
+const unsigned long maxDsc = 900000; //15 minutes - error if discharging time is more than this
+int overshootCount = 0; //Number of times the auto discharge power adjust overshot or undershot targer output
+int undershootCount = 0; //If these numbers are high, could indicate some channel of discharger has failed
+const int undershootLimit = 10; //Error if more than this number of overshoots in one discharge cycle
 
 //Charger modes
-const char modes[7][5] = {"WAIT", "CHG+", "CHGW", "DSC-", "DSCW", "DONE", "EROR"};
-byte mode = 0; //Current charger mode
+const char stateText[7][5] = {"WAIT", "CHG+", "CHGW", "DSC-", "DSCW", "DONE", "EROR"};
+byte state = 0; //Current charger state
+char error = '\0'; //Indicates type of error that ocurred.
 //'Convenient' constants for all the modes
-#define M_WAIT 0
-#define M_CHG 1
-#define M_CHGW 2
-#define M_DSC 3
-#define M_DSCW 4
-#define M_DONE 5
-#define M_ERROR 6
+#define M_WAIT 0 //Not doing any active cycling, startup state
+#define M_CHG 1 //The charger is active
+#define M_CHGW 2 //Charge Wait: Monitor voltage falloff after charger indicates its done
+#define M_DSC 3 //The discharge load is active
+#define M_DSCW 4 //Discharge Wait: Discharger shut off, Monitor voltage bounce back
+#define M_DONE 5 //Number of cycles or capacity cutoff reached
+#define M_ERROR 6 //Error occurred, shut off charger and discharger.
 
 //Communication mode
 #define UNSET 0
@@ -112,130 +139,69 @@ byte commMode = UNSET;
 LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 OneWire ds(tempPin);
 
-void setup()
-{
-  //IMPORTANT: Pullup on Serial1 RX ON!
-  // Allows disconnection of Bluetooth module from Arduino without floating serial input pins causing garbage input
-  pinMode(0, INPUT);
-  digitalWrite(0, HIGH);
-  
-  pinMode(ledpin,   OUTPUT);
-  pinMode(avLED,    OUTPUT);
-  pinMode(btState,  INPUT);
-  pinMode(avPin,    INPUT);
-  pinMode(selPin,   OUTPUT);
-  pinMode(enterPin, OUTPUT);
-  pinMode(stopPin,  OUTPUT);
-  pinMode(beepPin,  INPUT);
-  
-  digitalWrite(ledpin, LOW);
-  digitalWrite(avLED, LOW);
-  digitalWrite(selPin, HIGH);
-  digitalWrite(enterPin, LOW);
-  digitalWrite(beepPin, LOW);
-  
-  for (byte i = 0; i < totalChanels; ++i)
-  {
-    pinMode(chanelPins[i], OUTPUT);
-    digitalWrite(chanelPins[i], LOW);
-  }
-  
-  memset(sample, 0, sizeof(sample));
-  memset(fastSample, 0, sizeof(fastSample));
-  
-  Serial.begin(9600);
-  Serial1.begin(9600);
-  
-  lcd.begin(20,4);
-  
-  enableSPI();
-  avCheck();
-  
-  establishContact();
-  
-  //barTest();
-  attachInterrupt(4, interruptTest, CHANGE);
-  
-  lcd.clear();
-  initTemp();
-  initializeCalibration();
-  
-  //while(true){delay(10);}
-  //This number is incremented any time the calibration values are changed
-  //print(F("Calibration: "));
-  //int calNum = -1;
-  //EEPROM_readAnything(0, calNum);
-  //println(calNum);
-  
-  nextLoop = millis(); //Start counting loops from now
-  
-  cycleStart = millis(); //TODO: Make work better
-  
-  println(F("Entering main loop."));
-  println();
-}
 
 void loop()
 {
   digitalWrite(ledpin, HIGH);
   
-  if (pendingBeep)
-  {
-    print("BEEP:");
-    println(pendingBeep);
-    digitalWrite(enterPin, HIGH);
-    delay(pressTime);
-    digitalWrite(enterPin, LOW);
-    pendingBeep--;
-  }
-  
   readTemp();
   intervalCount++;
-  unsigned long seconds = (millis() - cycleStart) / 1000;
+  processLongPress();
+  unsigned long seconds = (millis() - timerStart) / 1000;
+
+  //Update both lcd parts
+  LCDUpdate(seconds);
+  LCDPartialUpdate();
+  transferFastSample(); //Redundant but for safety
+
+  //ADC Readings - Get full averages and use them to update everything this cycle
+  int avg[6];
+  averages(avg, sample, sampleCount);
+  float avgf[6];
+  for (byte i = 0; i < 6; i++)
+  {
+    avgf[i] = rawConvert(avg[i], i);
+  }
+
+  //Determine what the program should be doing
+  stateManager(avgf);
   
-  //unsigned int fsTemp = fastCount;
-  /*print(F("Vals: "));
-  print(F("S: "));
-  print(sampleCount);
-  print(F(" F:"));
-  println(fsTemp);*/
-  
+  //Begin entry
   print('@');
   print(intervalCount);
   print(F(" M:"));
-  print(modes[mode]);
+  print(stateText[state]);
   print(F(" C:"));
   println(cycle);
-  
-  LCDUpdate(seconds);
-  transferFastSample(); //Redundant but for safety
   
   //Temperature
   printTemps();
   
-  //ADC Readings
-  int avg[6];
-  averages(avg, sample, sampleCount);
-  
   print(F(":V"));
-  
+  //Output all channels
   for (byte i = 0; i < 6; i++)
   {
     print(' ');
     print(channelCodes[i]);
     print(':');
-    print(rawConvert(avg[i], i), 3);
+    print(avgf[i]);
   }
   println();
   
   //Elapsed time this cycle
   print(F(":T "));
   println(seconds);
+
+  //Any specialty satae-related outputs
+  printState(avgf);
   
   //Closing entry for this update
   print('$');
   println(intervalCount);
   println();
+
+  //Long beep check (now handled in stateManager()
+  //processBeep();
   
   //Reset averages
   memset(sample, 0, sizeof(sample));
@@ -245,91 +211,83 @@ void loop()
   delayUntil();
 }
 
-void interruptTest()
+void setPower(int goal)
+{
+  print(F("Power goal: "));
+  println(goal);
+  
+  int power = 0;
+  for(byte i = 0; i < totalChanels; i++)
+  {
+    if (power + chanelPower[i] <= goal)
+    {
+      power += chanelPower[i];
+      digitalWrite(chanelPins[i], HIGH);
+    }
+    else
+    {
+      digitalWrite(chanelPins[i], LOW);
+    }
+  }
+  
+  print(F("Power Achieved: "));
+  println(power);
+}
+
+void startBtn()
+{
+  ignoreBeeps = true;
+  longPress = longPressCount;
+  digitalWrite(enterPin, HIGH);
+}
+
+void stopBtn()
+{
+  ignoreBeeps = true;
+  digitalWrite(stopPin, HIGH);
+  delay(pressTime);
+  digitalWrite(stopPin, LOW);
+  ignoreBeeps = false;
+}
+
+//Long beep check - Stop pressing start button after set number of iterations of main loop
+void processLongPress()
+{
+  if (longPress > 0)
+  {
+    longPress--;
+    if (longPress == 0)
+    {
+      digitalWrite(enterPin, LOW);
+      ignoreBeeps = false;
+    }
+  }
+}
+
+void beepInterrupt()
 {
   boolean state = digitalRead(beepPin);
   if (state)
   {
+    if (ignoreBeeps) {return;}
+    
     beepStart = millis();
+    //Beginning of beep sequence
+    if (pendingBeep == 0)
+    {
+      beepWindowStart = beepStart;
+    }
   }
   else
   {
     unsigned long len = millis() - beepStart;
-    
+    //Check if valid beep length
     if (len > beepMin && len < beepMax)
     {
       pendingBeep++;
       beepStart = 0;
     }
   }
-}
-
-void LCDUpdate(unsigned long seconds)
-{
-  //Status
-  lcd.setCursor(0, 0);
-  lcd.print("STAT");
-  
-  //MAH
-  lcd.setCursor(5, 1);
-  lcd.print("1234");
-  
-  //Time
-  //unsigned long seconds = (millis() - cycleStart) / 1000;
-  printTime(seconds, 9, 1);
-  
-  //Cycle count
-  lcd.setCursor(0, 1);
-  clearPrint((long)cycle, 3, 0, 1, '0');
-  lcd.print('C');
-  
-  //Temps + Temp bar graph
-  float maxBatt = max(fahrenheit[BATT1], fahrenheit[BATT2]);
-  float delta = maxBatt - fahrenheit[AMBIENT];
-  float scaledTemp = max(delta * (lcdSteps / tempScale), 0);
-  
-  drawBar((byte)scaledTemp, 3, 'T');
-  clearPrint(maxBatt, 3, 1, 0, 3);
-  lcd.setCursor(6, 3);
-  lcd.print('(');
-  clearPrint(delta, 2, 1, 7, 3);
-  lcd.print(')');
-  clearPrint(fahrenheit[AUX], 3, 1, 12, 3);
-  
-  //Everything else
-  LCDPartialUpdate();
-}
-
-//Updates just the more frequently changing information (voltages,currents, etc)
-void LCDPartialUpdate()
-{
-  int avg[6];
-  averages(avg, fastSample, fastCount);
-
-  float voltage = rawConvert(avg[TOT], TOT);
-  float amperage = rawConvert(avg[CHG], CHG);
-  
-  clearPrint(amperage, 2, 2, 5, 0);
-  lcd.print('A');
-  
-  clearPrint(voltage, 2, 2, 11, 0);
-  lcd.print('V');
-  
-  //Cell Voltages: Cell 1
-  clearPrint(max(rawConvert(avg[C1], C1), 0), 1, 3, 0, 2);  //Cell 1
-  clearPrint(max(rawConvert(avg[C2], C2), 0), 1, 3, 6, 2);  //Cell 2
-  clearPrint(max(rawConvert(avg[C3], C3), 0), 1, 3, 12, 2); //Cell 3
-  //NOTE: Temporary negative values on startup can cause the cell lines to print funny due to negative sign.
-  //Either clamp value to minimum 0 OR always blank the empty space cahracter after each cell reading
-  
-  //TODO: Make this based off of the voltage and amperage floats which have the calibration values applied to them
-  float aBar = max(amperage / chargeMax * lcdSteps, 0);
-  float vBar = max((voltage - voltStart) / (voltEnd - voltStart) * lcdSteps , 0);
-  
-  drawBar((byte)vBar, 1, 'V');
-  drawBar((byte)aBar, 2, 'A');
-  
-  transferFastSample();
 }
 
 void delayUntil()
@@ -362,80 +320,5 @@ void delayUntil()
     }
     readInput();
     adcSample();
-  }
-}
-
-void establishContact() {
-  lcd.setCursor(1, 0);
-  lcd.print("GottaChargeFast.com");
-  lcd.setCursor(1, 1);
-  lcd.print("Press 'A' on");
-  lcd.setCursor(1, 2);
-  lcd.print("USB or");
-  lcd.setCursor(1, 3);
-  lcd.print("Bluetooth");
-  
-  //Clear buffers of anything that may have gotten in there from startup
-  while (Serial.available()){Serial.read();}
-  while (Serial1.available()){Serial1.read();}
-  
-  boolean flash = false;
-  setArrow();
-  
-  while (true)
-  {   
-    println(F("Press A to initialize"));
-    digitalWrite(ledpin, !digitalRead(ledpin));
-    
-    for (byte i = 0; i < 2; i++)
-    {
-      char arrowChar = 126;
-      if (flash)
-      {
-        arrowChar = 7;
-      }
-      if (digitalRead(btState))
-      {
-        lcd.setCursor(0, 2);
-        lcd.print(' ');
-        lcd.setCursor(0, 3);
-        lcd.print(arrowChar);
-      }
-      else
-      {
-        lcd.setCursor(0, 3);
-        lcd.print(' ');
-        lcd.setCursor(0, 2);
-        lcd.print(arrowChar);
-      }
-      flash = !flash;
-      
-      safeDelay(750);
-    }
-    
-    while (Serial.available())
-    {
-      int data = Serial.read();
-      
-      if (data == 'A' || data == 'a')
-      {
-        commMode = USB;
-        clearBuffer();
-        println(F("GottaChargeFast.com Initializing on USB..."));
-        return;
-      }
-    }
-    while (Serial1.available())
-    {
-      int data = Serial1.read();
-      
-      if (data == 'A' || data == 'a')
-      {
-        commMode = BLUETOOTH;
-        clearBuffer();
-        println(F("GottaChargeFast.com Initializing on Bluetooth..."));
-        return;
-      }
-    }
   }
 }

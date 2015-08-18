@@ -146,12 +146,14 @@ boolean avCheck()
   {
     //Shutdown SPI pins to prevent backfeeding power through ADC
     disableSPI();
-    
+
+    //TODO: Make handle errors like other parts of system
     avError = true;
     print(F("AV Error: "));
     print(voltage);
     print(F(" < "));
     println(avCutoff);
+    setError('A');
     return false;
   }
   return true;

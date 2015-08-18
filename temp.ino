@@ -82,7 +82,7 @@ void initTemp()
   while (ds.search(newAddr))
   {
     //Make sure maxTemp is not exceded
-    if (totalTemp + 1 > maxTemp)
+    if (totalTemp + 1 > maxTempSensors)
     {
       //Maximum sensor count exceded. Ignoring all remaining devices
       println(F("MTS"));
@@ -139,7 +139,7 @@ void initTemp()
   print(F("TMP:"));
   println(totalTemp);
   
-  for(byte i = 0; i < 8*maxTemp; i++)
+  for(byte i = 0; i < 8*maxTempSensors; i++)
   {
     print(addr[i], HEX);
     print(' ');
